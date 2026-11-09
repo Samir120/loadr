@@ -1,0 +1,5 @@
+.private/
+/loadr
+/dist/
+*.test
+*.prof
