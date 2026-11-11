@@ -23,7 +23,7 @@ func TestRun(t *testing.T) {
 		wantErr    error
 		wantStdout string
 	}{
-		{name: "happy path", args: []string{"-n", "1", "-c", "1", srv.URL}, wantStdout: "status 204"},
+		{name: "happy path", args: []string{"-n", "1", "-c", "1", srv.URL}, wantStdout: "requests 1  errors 0"},
 		{name: "help", args: []string{"-h"}, wantErr: flag.ErrHelp},
 		{name: "missing url", args: []string{"-n", "1"}, wantErr: errUsage},
 		{name: "two urls", args: []string{srv.URL, srv.URL}, wantErr: errUsage},

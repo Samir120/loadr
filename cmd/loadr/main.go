@@ -42,7 +42,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	_, err = fmt.Fprintf(stdout, "status %d in %s\n", res.Status, res.Elapsed)
+	_, err = fmt.Fprintf(stdout, "requests %d  errors %d  elapsed %s\n", res.Requests, res.Errors, res.Elapsed)
 	return err
 }
 
