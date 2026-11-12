@@ -17,13 +17,19 @@ func TestRun(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
 	tests := []struct {
 		name       string
+		ctx        context.Context
 		args       []string
 		wantErr    error
 		wantStdout string
 	}{
 		{name: "happy path", args: []string{"-n", "1", "-c", "1", srv.URL}, wantStdout: "requests 1  errors 0"},
+		{name: "duration", args: []string{"-d", "50ms", "-c", "2", srv.URL}, wantStdout: "errors 0"},
+		{name: "interrupted", ctx: cancelled, args: []string{"-n", "100", srv.URL}, wantErr: errInterrupted, wantStdout: "requests 0  errors 0"},
 		{name: "help", args: []string{"-h"}, wantErr: flag.ErrHelp},
 		{name: "missing url", args: []string{"-n", "1"}, wantErr: errUsage},
 		{name: "two urls", args: []string{srv.URL, srv.URL}, wantErr: errUsage},
@@ -34,16 +40,15 @@ func TestRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			err := run(context.Background(), tt.args, &stdout, &stderr)
-			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("run() error = %v, want %v", err, tt.wantErr)
-				}
-				return
+			ctx := tt.ctx
+			if ctx == nil {
+				ctx = context.Background()
 			}
-			if err != nil {
-				t.Fatalf("run() error = %v", err)
+
+			var stdout, stderr bytes.Buffer
+			err := run(ctx, tt.args, &stdout, &stderr)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("run() error = %v, want %v", err, tt.wantErr)
 			}
 			if !strings.Contains(stdout.String(), tt.wantStdout) {
 				t.Errorf("stdout = %q, want it to contain %q", stdout.String(), tt.wantStdout)

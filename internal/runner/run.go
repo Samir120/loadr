@@ -4,9 +4,9 @@ package runner
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -15,12 +15,13 @@ import (
 	"github.com/Samir120/loadr/internal/stats"
 )
 
-// Result summarises a completed run.
+// Result summarises a run.
 type Result struct {
-	// Requests is the number of requests attempted, failed ones included.
+	// Requests is the number of requests that completed, failed ones
+	// included. Requests abandoned because the run ended are not counted.
 	Requests int
 
-	// Errors is the number of requests that failed.
+	// Errors is the number of completed requests that failed.
 	Errors int
 
 	// Elapsed is the wall-clock time of the whole run.
@@ -29,14 +30,20 @@ type Result struct {
 
 // Run performs the load test described by cfg, which must be valid.
 //
+// The run ends when cfg.Requests have been sent, when cfg.Duration has
+// passed, or when ctx is cancelled, whichever comes first. Requests still in
+// flight at that point are abandoned and left out of the Result, so a
+// cancelled run returns a partial Result and a nil error.
+//
 // Failed requests are counted in the Result, not returned as an error; the
 // error is reserved for problems with the run itself.
 func Run(ctx context.Context, cfg Config) (Result, error) {
-	if cfg.Duration > 0 {
-		return Result{}, errors.New("duration mode is not implemented yet")
+	client, err := newClient(cfg.Concurrency)
+	if err != nil {
+		return Result{}, err
 	}
+	defer client.CloseIdleConnections()
 
-	client := http.DefaultClient
 	samples := make(chan stats.Sample, cfg.Concurrency)
 	done := make(chan Result)
 	go func() {
@@ -49,10 +56,21 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	)
 	limit := int64(cfg.Requests)
 	start := time.Now()
+	if cfg.Duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.Duration)
+		defer cancel()
+		limit = math.MaxInt64
+	}
+
 	for range cfg.Concurrency {
 		wg.Go(func() {
-			for claimed.Add(1) <= limit {
-				samples <- send(ctx, client, cfg)
+			for ctx.Err() == nil && claimed.Add(1) <= limit {
+				s := send(ctx, client, cfg)
+				if s.Err != nil && ctx.Err() != nil {
+					return // abandoned because the run ended; not a measurement
+				}
+				samples <- s
 			}
 		})
 	}
@@ -63,6 +81,21 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	res := <-done
 	res.Elapsed = elapsed
 	return res, nil
+}
+
+// newClient returns a client whose connection pool matches the worker pool.
+// The default transport keeps only two idle connections per host, so with
+// more workers than that most requests would dial a fresh connection.
+func newClient(concurrency int) (*http.Client, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("default transport is %T, want *http.Transport", http.DefaultTransport)
+	}
+	t := base.Clone()
+	t.MaxIdleConns = concurrency
+	t.MaxIdleConnsPerHost = concurrency
+	t.MaxConnsPerHost = concurrency
+	return &http.Client{Transport: t}, nil
 }
 
 // collect is the only reader of samples and the only writer of the Result,

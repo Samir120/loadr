@@ -8,20 +8,33 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/Samir120/loadr/internal/runner"
 )
 
-// errUsage marks errors caused by invalid flags or arguments. main maps it
-// to exit code 2.
-var errUsage = errors.New("usage error")
+var (
+	// errUsage marks errors caused by invalid flags or arguments. main maps
+	// it to exit code 2.
+	errUsage = errors.New("usage error")
+
+	// errInterrupted reports that the run was cut short by Ctrl-C after the
+	// partial result was printed. main maps it to exit code 130.
+	errInterrupted = errors.New("interrupted")
+)
 
 func main() {
-	err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	err := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return
+	case errors.Is(err, errInterrupted):
+		fmt.Fprintln(os.Stderr, "loadr:", err)
+		os.Exit(130)
 	case errors.Is(err, errUsage):
 		fmt.Fprintln(os.Stderr, "loadr:", err)
 		os.Exit(2)
@@ -41,9 +54,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	interrupted := ctx.Err() != nil
 
-	_, err = fmt.Fprintf(stdout, "requests %d  errors %d  elapsed %s\n", res.Requests, res.Errors, res.Elapsed)
-	return err
+	if _, err := fmt.Fprintf(stdout, "requests %d  errors %d  elapsed %s\n", res.Requests, res.Errors, res.Elapsed); err != nil {
+		return err
+	}
+	if interrupted {
+		return errInterrupted
+	}
+	return nil
 }
 
 func parseFlags(args []string, stderr io.Writer) (runner.Config, error) {
