@@ -16,13 +16,11 @@ import (
 )
 
 // Result summarises a run.
+//
+// The embedded Summary covers completed requests only, failed ones included.
+// Requests abandoned because the run ended are not counted.
 type Result struct {
-	// Requests is the number of requests that completed, failed ones
-	// included. Requests abandoned because the run ended are not counted.
-	Requests int
-
-	// Errors is the number of completed requests that failed.
-	Errors int
+	stats.Summary
 
 	// Elapsed is the wall-clock time of the whole run.
 	Elapsed time.Duration
@@ -45,7 +43,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	defer client.CloseIdleConnections()
 
 	samples := make(chan stats.Sample, cfg.Concurrency)
-	done := make(chan Result)
+	done := make(chan stats.Summary)
 	go func() {
 		done <- collect(samples)
 	}()
@@ -78,9 +76,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	elapsed := time.Since(start)
 	close(samples)
 
-	res := <-done
-	res.Elapsed = elapsed
-	return res, nil
+	return Result{Summary: <-done, Elapsed: elapsed}, nil
 }
 
 // newClient returns a client whose connection pool matches the worker pool.
@@ -98,17 +94,14 @@ func newClient(concurrency int) (*http.Client, error) {
 	return &http.Client{Transport: t}, nil
 }
 
-// collect is the only reader of samples and the only writer of the Result,
-// so neither needs a lock. It returns once samples is closed and drained.
-func collect(samples <-chan stats.Sample) Result {
-	var res Result
+// collect is the only goroutine that touches the Collector, so it needs no
+// lock. It returns once samples is closed and drained.
+func collect(samples <-chan stats.Sample) stats.Summary {
+	var c stats.Collector
 	for s := range samples {
-		res.Requests++
-		if s.Err != nil {
-			res.Errors++
-		}
+		c.Add(s)
 	}
-	return res
+	return c.Summary()
 }
 
 // send performs one request and reports what happened. Failures are part of

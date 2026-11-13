@@ -62,11 +62,11 @@ Dependency direction is strictly downward: `cmd` → `runner` → `stats`; `cmd`
 
 ### Data flow
 
-1. `main` parses flags into `runner.Config`, builds a `context.Context` from `signal.NotifyContext`, wraps it in `context.WithTimeout` when `-d` is set.
-2. `runner.Run(ctx, cfg)` starts `cfg.Concurrency` workers and one collector.
-3. Each worker loops: claim a request slot (atomic counter for `-n`, or `ctx.Done()` for `-d`), optionally wait on the rate-limit ticker, build a fresh `*http.Request` with `context.WithTimeout(ctx, cfg.Timeout)`, send it through the shared `*http.Client`, drain the body to `io.Discard`, close it, send a `stats.Sample{Latency, Status, Err, Bytes}` on the results channel.
-4. The collector appends samples into a `stats.Collector`. After the `WaitGroup` is done the channel is closed and drained.
-5. `Run` returns `stats.Summary` plus a `runner.Result` (wall time, requests attempted). `report` renders it.
+1. `main` parses flags into `runner.Config` and builds a `context.Context` from `signal.NotifyContext`. The signal is the only thing that cancels it.
+2. `runner.Run(ctx, cfg)` wraps `ctx` in `context.WithTimeout` when `-d` is set, then starts `cfg.Concurrency` workers and one collector.
+3. Each worker loops while `ctx` is not done: claim a request slot from a shared atomic counter (limit `-n`, unbounded under `-d`), optionally wait on the rate-limit ticker, build a fresh `*http.Request` with `context.WithTimeout(ctx, cfg.Timeout)`, send it through the shared `*http.Client`, drain the body to `io.Discard`, close it, send a `stats.Sample{Latency, Status, Bytes, Err}` on the results channel. A sample that failed after the run's `ctx` was done is dropped: the request was abandoned, not measured.
+4. The collector feeds every sample to a `stats.Collector`. After the `WaitGroup` is done the channel is closed and drained, and the collector returns `Collector.Summary()`.
+5. `Run` returns a `runner.Result`: the `stats.Summary` (embedded) plus wall-clock `Elapsed`. `report` renders it.
 
 ### Key decisions
 
@@ -98,5 +98,6 @@ Whether a completed run with request errors returns 0 is open (STATE.md Q1).
 ## Measurement notes (for the README)
 
 - Latencies include DNS, connect and TLS for the first request on each connection; subsequent requests reuse connections.
+- Failed requests (timeouts, connection errors, body read errors) count toward the request and error totals only; they are excluded from latency, status codes and bytes.
 - The tool measures what the client observes; it is not a substitute for server-side metrics.
 - Running on the same machine as the target distorts results.
