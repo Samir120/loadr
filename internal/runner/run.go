@@ -3,6 +3,7 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -110,9 +111,9 @@ func send(ctx context.Context, client *http.Client, cfg Config) stats.Sample {
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.URL, nil)
+	req, err := newRequest(ctx, cfg)
 	if err != nil {
-		return stats.Sample{Err: fmt.Errorf("building request: %w", err)}
+		return stats.Sample{Err: err}
 	}
 
 	start := time.Now()
@@ -128,4 +129,25 @@ func send(ctx context.Context, client *http.Client, cfg Config) stats.Sample {
 		s.Err = fmt.Errorf("reading body: %w", err)
 	}
 	return s
+}
+
+// newRequest builds a fresh request from cfg. A request is not safe to share
+// between goroutines, so every call gets its own header map and body reader;
+// cfg itself is only read.
+func newRequest(ctx context.Context, cfg Config) (*http.Request, error) {
+	var body io.Reader
+	if len(cfg.Body) > 0 {
+		body = bytes.NewReader(cfg.Body)
+	}
+	req, err := http.NewRequestWithContext(ctx, cfg.Method, cfg.URL, body)
+	if err != nil {
+		return nil, fmt.Errorf("building request: %w", err)
+	}
+	if cfg.Header != nil {
+		req.Header = cfg.Header.Clone()
+	}
+	if host := req.Header.Get("Host"); host != "" {
+		req.Host = host
+	}
+	return req, nil
 }
