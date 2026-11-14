@@ -1,0 +1,14 @@
+Summary
+  Requests  10000         Duration  4.21s
+  Rate      2375.3 req/s  Bytes     1.2 MB
+
+Latency
+  min  0.8ms   mean  41.2ms  max  312.6ms
+  p50  38.1ms  p90   67.4ms  p95  84.0ms  p99  142.7ms
+
+Status codes
+  200  9980
+  503  12
+
+Errors
+  total  8

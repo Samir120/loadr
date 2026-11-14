@@ -11,7 +11,9 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/Samir120/loadr/internal/report"
 	"github.com/Samir120/loadr/internal/runner"
+	"github.com/Samir120/loadr/internal/stats"
 )
 
 var (
@@ -23,6 +25,14 @@ var (
 	// partial result was printed. main maps it to exit code 130.
 	errInterrupted = errors.New("interrupted")
 )
+
+// options is everything parsed from the command line.
+type options struct {
+	cfg runner.Config
+
+	// render writes the report in the format chosen with -o.
+	render func(w io.Writer, s stats.Summary, elapsed time.Duration) error
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -44,19 +54,23 @@ func main() {
 	}
 }
 
+// run parses args, performs the load test and writes the report to stdout.
+//
+// Failed requests are part of the report, not an error: a run that
+// completes returns nil however many of its requests failed.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	cfg, err := parseFlags(args, stderr)
+	opts, err := parseFlags(args, stderr)
 	if err != nil {
 		return err
 	}
 
-	res, err := runner.Run(ctx, cfg)
+	res, err := runner.Run(ctx, opts.cfg)
 	if err != nil {
 		return err
 	}
 	interrupted := ctx.Err() != nil
 
-	if _, err := fmt.Fprintf(stdout, "requests %d  errors %d  elapsed %s\n", res.Requests, res.Errors, res.Elapsed); err != nil {
+	if err := opts.render(stdout, res.Summary, res.Elapsed); err != nil {
 		return err
 	}
 	if interrupted {
@@ -65,7 +79,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func parseFlags(args []string, stderr io.Writer) (runner.Config, error) {
+func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("loadr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -73,26 +87,40 @@ func parseFlags(args []string, stderr io.Writer) (runner.Config, error) {
 		fs.PrintDefaults()
 	}
 
-	var cfg runner.Config
+	var (
+		cfg    runner.Config
+		format string
+	)
 	fs.IntVar(&cfg.Requests, "n", 200, "total requests; ignored when -d is set")
 	fs.DurationVar(&cfg.Duration, "d", 0, "run for this long instead of a fixed count")
 	fs.IntVar(&cfg.Concurrency, "c", 10, "concurrent workers")
 	fs.DurationVar(&cfg.Timeout, "t", 10*time.Second, "per-request timeout")
+	fs.StringVar(&format, "o", "text", "output format: text | json")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return runner.Config{}, err
+			return options{}, err
 		}
-		return runner.Config{}, fmt.Errorf("%w: %v", errUsage, err)
+		return options{}, fmt.Errorf("%w: %v", errUsage, err)
 	}
 	if fs.NArg() != 1 {
 		fs.Usage()
-		return runner.Config{}, fmt.Errorf("%w: expected one URL, got %d", errUsage, fs.NArg())
+		return options{}, fmt.Errorf("%w: expected one URL, got %d", errUsage, fs.NArg())
 	}
 	cfg.URL = fs.Arg(0)
 
 	if err := cfg.Validate(); err != nil {
-		return runner.Config{}, fmt.Errorf("%w: %v", errUsage, err)
+		return options{}, fmt.Errorf("%w: %v", errUsage, err)
 	}
-	return cfg, nil
+
+	opts := options{cfg: cfg}
+	switch format {
+	case "text":
+		opts.render = report.Text
+	case "json":
+		opts.render = report.JSON
+	default:
+		return options{}, fmt.Errorf("%w: output format %q: must be text or json", errUsage, format)
+	}
+	return opts, nil
 }
