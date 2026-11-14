@@ -34,6 +34,10 @@ type Result struct {
 // flight at that point are abandoned and left out of the Result, so a
 // cancelled run returns a partial Result and a nil error.
 //
+// When cfg.Rate is set, all workers wait on one shared ticker, so the run as
+// a whole sends at most cfg.Rate requests per second. Under heavy load it
+// falls short of that rate; it never exceeds it.
+//
 // Failed requests are counted in the Result, not returned as an error; the
 // error is reserved for problems with the run itself.
 func Run(ctx context.Context, cfg Config) (Result, error) {
@@ -46,7 +50,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	samples := make(chan stats.Sample, cfg.Concurrency)
 	done := make(chan stats.Summary)
 	go func() {
-		done <- collect(samples)
+		done <- collect(samples, cfg.Completed)
 	}()
 
 	var (
@@ -62,9 +66,22 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		limit = math.MaxInt64
 	}
 
+	// tick stays nil without a rate limit. The ticker starts after start is
+	// taken, so its n-th tick, and with it the n-th request, comes no
+	// earlier than n/Rate into the run.
+	var tick <-chan time.Time
+	if cfg.Rate > 0 {
+		ticker := time.NewTicker(time.Second / time.Duration(cfg.Rate))
+		defer ticker.Stop()
+		tick = ticker.C
+	}
+
 	for range cfg.Concurrency {
 		wg.Go(func() {
 			for ctx.Err() == nil && claimed.Add(1) <= limit {
+				if !wait(ctx, tick) {
+					return // the run ended while waiting for the rate limiter
+				}
 				s := send(ctx, client, cfg)
 				if s.Err != nil && ctx.Err() != nil {
 					return // abandoned because the run ended; not a measurement
@@ -78,6 +95,22 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	close(samples)
 
 	return Result{Summary: <-done, Elapsed: elapsed}, nil
+}
+
+// wait blocks until the rate limiter allows the next request and reports
+// whether it did; false means ctx ended first. A nil tick means no limit.
+// It is checked before the select because a receive from a nil channel
+// blocks forever, which would leave only ctx.Done as a way out.
+func wait(ctx context.Context, tick <-chan time.Time) bool {
+	if tick == nil {
+		return true
+	}
+	select {
+	case <-tick:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // newClient returns a client whose connection pool matches the worker pool.
@@ -96,11 +129,15 @@ func newClient(concurrency int) (*http.Client, error) {
 }
 
 // collect is the only goroutine that touches the Collector, so it needs no
-// lock. It returns once samples is closed and drained.
-func collect(samples <-chan stats.Sample) stats.Summary {
+// lock. It returns once samples is closed and drained. When completed is
+// non-nil it is kept equal to the number of samples added so far.
+func collect(samples <-chan stats.Sample, completed *atomic.Int64) stats.Summary {
 	var c stats.Collector
 	for s := range samples {
 		c.Add(s)
+		if completed != nil {
+			completed.Add(1)
+		}
 	}
 	return c.Summary()
 }

@@ -6,8 +6,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// maxRate is the highest valid Config.Rate: one request per nanosecond.
+// Above it the ticker interval, time.Second / Rate, truncates to zero, and
+// time.NewTicker panics on a non-positive interval.
+const maxRate = int(time.Second)
 
 // Config describes one load-test run. The caller builds it and must call
 // Validate before passing it to Run.
@@ -39,6 +45,15 @@ type Config struct {
 
 	// Timeout bounds each individual request.
 	Timeout time.Duration
+
+	// Rate caps the run at this many requests per second across all
+	// workers. Zero means no limit.
+	Rate int
+
+	// Completed, when non-nil, is incremented once for every request
+	// counted in the Result, as it is counted, so another goroutine can
+	// follow the run's progress. Run only ever adds to it.
+	Completed *atomic.Int64
 }
 
 // Validate reports the first problem with the configuration, or nil.
@@ -77,6 +92,9 @@ func (c Config) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return errors.New("timeout must be > 0")
+	}
+	if c.Rate < 0 || c.Rate > maxRate {
+		return fmt.Errorf("rate must be between 0 and %d", maxRate)
 	}
 	return nil
 }

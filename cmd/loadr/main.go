@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Samir120/loadr/internal/report"
@@ -18,10 +19,19 @@ import (
 	"github.com/Samir120/loadr/internal/stats"
 )
 
-// defaultContentType labels a -body that no -H labels. RFC 9110 lets a
-// server assume it for an unlabelled body, so it claims nothing about the
-// bytes.
-const defaultContentType = "application/octet-stream"
+const (
+	// defaultContentType labels a -body that no -H labels. RFC 9110 lets a
+	// server assume it for an unlabelled body, so it claims nothing about
+	// the bytes.
+	defaultContentType = "application/octet-stream"
+
+	// progressInterval is how often the progress line is redrawn.
+	progressInterval = 200 * time.Millisecond
+
+	// eraseLine is the ANSI sequence that clears from the cursor to the end
+	// of the line. It is only ever written to a terminal.
+	eraseLine = "\x1b[K"
+)
 
 var (
 	// errUsage marks errors caused by invalid flags or arguments. main maps
@@ -82,6 +92,8 @@ func main() {
 }
 
 // run parses args, performs the load test and writes the report to stdout.
+// While the test runs, a progress line is redrawn on stderr if stderr is a
+// terminal.
 //
 // Failed requests are part of the report, not an error: a run that
 // completes returns nil however many of its requests failed.
@@ -91,7 +103,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	stopProgress := func() {}
+	if isTerminal(stderr) {
+		completed := new(atomic.Int64)
+		opts.cfg.Completed = completed
+		ticker := time.NewTicker(progressInterval)
+		defer ticker.Stop()
+		stopProgress = startProgress(stderr, completed, ticker.C)
+	}
+
 	res, err := runner.Run(ctx, opts.cfg)
+	stopProgress()
 	if err != nil {
 		return err
 	}
@@ -123,6 +145,7 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs.IntVar(&cfg.Requests, "n", 200, "total requests; ignored when -d is set")
 	fs.DurationVar(&cfg.Duration, "d", 0, "run for this long instead of a fixed count")
 	fs.IntVar(&cfg.Concurrency, "c", 10, "concurrent workers")
+	fs.IntVar(&cfg.Rate, "q", 0, "max requests per second across all workers; 0 = unlimited")
 	fs.StringVar(&cfg.Method, "m", http.MethodGet, "HTTP method")
 	fs.Var(headerFlag(cfg.Header), "H", `request header "Key: Value"; repeatable`)
 	fs.StringVar(&body, "body", "", `request body; "@path" reads it from a file`)
@@ -178,4 +201,41 @@ func readBody(arg string) ([]byte, error) {
 		return nil, fmt.Errorf("reading body: %w", err)
 	}
 	return b, nil
+}
+
+// isTerminal reports whether w is a character device. Anything that is not
+// an *os.File, such as a test's buffer, is not. /dev/null is a character
+// device too, which only means the progress line is written and discarded.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// startProgress redraws "\rN requests" on w at every tick until the returned
+// stop function is called. stop erases the line and returns only after the
+// last write, so the progress line never interleaves with what run writes
+// next. stop must be called exactly once.
+func startProgress(w io.Writer, completed *atomic.Int64, tick <-chan time.Time) (stop func()) {
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-tick:
+				fmt.Fprintf(w, "\r%d requests", completed.Load())
+			case <-quit:
+				fmt.Fprint(w, "\r"+eraseLine)
+				return
+			}
+		}
+	}()
+	return func() {
+		close(quit)
+		<-done
+	}
 }
