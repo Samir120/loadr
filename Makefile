@@ -4,8 +4,10 @@ PKG    := ./...
 
 .PHONY: build test vet fmt lint check clean
 
+# CGO_ENABLED=0 keeps the binary static, as DESIGN promises: with cgo on,
+# the net package links against the host's libc.
 build:
-	go build -trimpath -o $(BINARY) ./cmd/loadr
+	CGO_ENABLED=0 go build -trimpath -o $(BINARY) ./cmd/loadr
 
 test:
 	go test -race $(PKG)
