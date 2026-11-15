@@ -11,4 +11,7 @@ Status codes
   503  12
 
 Errors
-  total  8
+  total    8
+  closed   3
+  timeout  3
+  refused  2

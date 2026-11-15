@@ -4,6 +4,7 @@ package report
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
 	"io"
 	"maps"
@@ -18,7 +19,8 @@ import (
 // wall-clock time.
 //
 // Sections with nothing to show are left out: Latency and Status codes when
-// no request succeeded, Errors when none failed.
+// no request succeeded, Errors when none failed. Errors lists the total and
+// then one line per error class, most common first.
 func Text(w io.Writer, s stats.Summary, elapsed time.Duration) error {
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
@@ -46,6 +48,9 @@ func Text(w io.Writer, s stats.Summary, elapsed time.Duration) error {
 		fmt.Fprintln(tw)
 		fmt.Fprintln(tw, "Errors")
 		fmt.Fprintf(tw, "  total\t%d\n", s.Errors)
+		for _, class := range byCount(s.ErrorClasses) {
+			fmt.Fprintf(tw, "  %s\t%d\n", class, s.ErrorClasses[class])
+		}
 	}
 
 	if err := tw.Flush(); err != nil {
@@ -55,6 +60,16 @@ func Text(w io.Writer, s stats.Summary, elapsed time.Duration) error {
 		return fmt.Errorf("writing text report: %w", err)
 	}
 	return nil
+}
+
+// byCount returns the keys of m, largest count first and equal counts in
+// name order, so the most common class leads and the order is deterministic.
+func byCount(m map[string]int) []string {
+	keys := slices.Collect(maps.Keys(m))
+	slices.SortFunc(keys, func(a, b string) int {
+		return cmp.Or(cmp.Compare(m[b], m[a]), cmp.Compare(a, b))
+	})
+	return keys
 }
 
 // rate returns requests per second over elapsed, or 0 if elapsed is not

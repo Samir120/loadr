@@ -12,13 +12,14 @@ import (
 // jsonReport is the JSON shape of a report. Its field names are part of
 // loadr's output contract: add fields, never rename or remove them.
 type jsonReport struct {
-	Requests    int         `json:"requests"`
-	Errors      int         `json:"errors"`
-	DurationMs  float64     `json:"duration_ms"`
-	RateRPS     float64     `json:"rate_rps"`
-	Bytes       int64       `json:"bytes"`
-	LatencyMs   jsonLatency `json:"latency_ms"`
-	StatusCodes map[int]int `json:"status_codes"`
+	Requests     int            `json:"requests"`
+	Errors       int            `json:"errors"`
+	DurationMs   float64        `json:"duration_ms"`
+	RateRPS      float64        `json:"rate_rps"`
+	Bytes        int64          `json:"bytes"`
+	LatencyMs    jsonLatency    `json:"latency_ms"`
+	StatusCodes  map[int]int    `json:"status_codes"`
+	ErrorClasses map[string]int `json:"error_classes"`
 }
 
 // jsonLatency holds latency statistics in fractional milliseconds.
@@ -37,13 +38,9 @@ type jsonLatency struct {
 //
 // Durations are fractional milliseconds. Every field is always present:
 // when no request succeeded the latency fields are 0 and status_codes is an
-// empty object, never null.
+// empty object; when none failed error_classes is an empty object. Neither
+// is ever null.
 func JSON(w io.Writer, s stats.Summary, elapsed time.Duration) error {
-	statuses := s.Statuses
-	if statuses == nil {
-		statuses = map[int]int{}
-	}
-
 	r := jsonReport{
 		Requests:   s.Requests,
 		Errors:     s.Errors,
@@ -59,11 +56,21 @@ func JSON(w io.Writer, s stats.Summary, elapsed time.Duration) error {
 			P95:  millis(s.P95),
 			P99:  millis(s.P99),
 		},
-		StatusCodes: statuses,
+		StatusCodes:  nonNil(s.Statuses),
+		ErrorClasses: nonNil(s.ErrorClasses),
 	}
 
 	if err := json.NewEncoder(w).Encode(r); err != nil {
 		return fmt.Errorf("writing JSON report: %w", err)
 	}
 	return nil
+}
+
+// nonNil returns m, or an empty map if m is nil, so that encoding/json
+// writes {} instead of null.
+func nonNil[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
+	}
+	return m
 }

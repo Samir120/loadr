@@ -21,25 +21,32 @@ func TestText(t *testing.T) {
 		elapsed time.Duration
 	}{
 		{
+			// closed and timeout tie at 3, so the golden file pins the
+			// name-order tiebreak as well as largest-first.
 			name: "full",
 			summary: stats.Summary{
-				Requests: 10000,
-				Errors:   8,
-				Bytes:    1_234_567,
-				Min:      812 * time.Microsecond,
-				Mean:     41_200 * time.Microsecond,
-				Max:      312_600 * time.Microsecond,
-				P50:      38_100 * time.Microsecond,
-				P90:      67_400 * time.Microsecond,
-				P95:      84 * time.Millisecond,
-				P99:      142_700 * time.Microsecond,
-				Statuses: map[int]int{503: 12, 200: 9980},
+				Requests:     10000,
+				Errors:       8,
+				Bytes:        1_234_567,
+				Min:          812 * time.Microsecond,
+				Mean:         41_200 * time.Microsecond,
+				Max:          312_600 * time.Microsecond,
+				P50:          38_100 * time.Microsecond,
+				P90:          67_400 * time.Microsecond,
+				P95:          84 * time.Millisecond,
+				P99:          142_700 * time.Microsecond,
+				Statuses:     map[int]int{503: 12, 200: 9980},
+				ErrorClasses: map[string]int{"timeout": 3, "refused": 2, "closed": 3},
 			},
 			elapsed: 4210 * time.Millisecond,
 		},
 		{
-			name:    "all_failed",
-			summary: stats.Summary{Requests: 5, Errors: 5},
+			name: "all_failed",
+			summary: stats.Summary{
+				Requests:     5,
+				Errors:       5,
+				ErrorClasses: map[string]int{"refused": 5},
+			},
 			elapsed: time.Second,
 		},
 		{

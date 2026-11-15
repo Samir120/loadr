@@ -1,8 +1,11 @@
 package stats
 
 import (
+	"context"
 	"errors"
+	"os"
 	"reflect"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -75,7 +78,8 @@ func TestCollectorSummary(t *testing.T) {
 				Requests: 4, Errors: 2, Bytes: 100,
 				Min: ms(2), Mean: ms(3), Max: ms(4),
 				P50: ms(2), P90: ms(4), P95: ms(4), P99: ms(4),
-				Statuses: map[int]int{200: 2},
+				Statuses:     map[int]int{200: 2},
+				ErrorClasses: map[string]int{classOther: 2},
 			},
 		},
 		{
@@ -84,7 +88,25 @@ func TestCollectorSummary(t *testing.T) {
 				{Latency: ms(5), Err: errFailed},
 				{Latency: ms(6), Err: errFailed},
 			},
-			want: Summary{Requests: 2, Errors: 2},
+			want: Summary{
+				Requests: 2, Errors: 2,
+				ErrorClasses: map[string]int{classOther: 2},
+			},
+		},
+		{
+			// Class counts add up to Errors.
+			name: "failures by class",
+			samples: []Sample{
+				{Err: sendErr(context.DeadlineExceeded)},
+				{Err: sendErr(dialErr(os.NewSyscallError("socket", syscall.EMFILE)))},
+				{Err: sendErr(context.DeadlineExceeded)},
+				{Err: sendErr(dialErr(os.NewSyscallError("connect", syscall.ECONNREFUSED)))},
+				{Err: sendErr(context.DeadlineExceeded)},
+			},
+			want: Summary{
+				Requests: 5, Errors: 5,
+				ErrorClasses: map[string]int{classTimeout: 3, classFDLimit: 1, classRefused: 1},
+			},
 		},
 	}
 
@@ -104,9 +126,11 @@ func TestCollectorSummary(t *testing.T) {
 func TestSummaryDoesNotAliasCollector(t *testing.T) {
 	var c Collector
 	c.Add(success(5, 200, 0))
+	c.Add(Sample{Err: errors.New("failed")})
 
 	first := c.Summary()
 	first.Statuses[200] = 99
+	first.ErrorClasses[classOther] = 99
 
 	// Adding after Summary has sorted in place must still work.
 	c.Add(success(1, 404, 0))
@@ -114,6 +138,9 @@ func TestSummaryDoesNotAliasCollector(t *testing.T) {
 
 	if want := map[int]int{200: 1, 404: 1}; !reflect.DeepEqual(got.Statuses, want) {
 		t.Errorf("Statuses = %v, want %v", got.Statuses, want)
+	}
+	if want := map[string]int{classOther: 1}; !reflect.DeepEqual(got.ErrorClasses, want) {
+		t.Errorf("ErrorClasses = %v, want %v", got.ErrorClasses, want)
 	}
 	if got.Min != ms(1) {
 		t.Errorf("Min = %v, want %v", got.Min, ms(1))

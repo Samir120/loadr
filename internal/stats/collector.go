@@ -10,18 +10,19 @@ import (
 // ready to use. A Collector is not safe for concurrent use; feed it from a
 // single goroutine.
 type Collector struct {
-	latencies []time.Duration
-	total     time.Duration
-	statuses  map[int]int
-	errors    int
-	bytes     int64
+	latencies    []time.Duration
+	total        time.Duration
+	statuses     map[int]int
+	errors       int
+	errorClasses map[string]int
+	bytes        int64
 }
 
 // Summary is the aggregate of every sample added to a Collector.
 //
-// Failed samples count toward Requests and Errors only. Latency fields, Bytes
-// and Statuses describe successful samples; the latency fields are zero and
-// Statuses is nil when there were none.
+// Failed samples count toward Requests, Errors and ErrorClasses only.
+// Latency fields, Bytes and Statuses describe successful samples; the
+// latency fields are zero and Statuses is nil when there were none.
 type Summary struct {
 	Requests int
 	Errors   int
@@ -32,12 +33,21 @@ type Summary struct {
 
 	// Statuses maps HTTP status code to the number of responses with it.
 	Statuses map[int]int
+
+	// ErrorClasses maps an error class, such as "timeout" or "refused", to
+	// the number of failed requests in it. Its counts add up to Errors; it
+	// is nil when no request failed.
+	ErrorClasses map[string]int
 }
 
 // Add records one sample.
 func (c *Collector) Add(s Sample) {
 	if s.Err != nil {
 		c.errors++
+		if c.errorClasses == nil {
+			c.errorClasses = make(map[string]int)
+		}
+		c.errorClasses[classify(s.Err)]++
 		return
 	}
 	c.latencies = append(c.latencies, s.Latency)
@@ -54,10 +64,11 @@ func (c *Collector) Add(s Sample) {
 // calls to Add remain valid.
 func (c *Collector) Summary() Summary {
 	sum := Summary{
-		Requests: len(c.latencies) + c.errors,
-		Errors:   c.errors,
-		Bytes:    c.bytes,
-		Statuses: maps.Clone(c.statuses),
+		Requests:     len(c.latencies) + c.errors,
+		Errors:       c.errors,
+		Bytes:        c.bytes,
+		Statuses:     maps.Clone(c.statuses),
+		ErrorClasses: maps.Clone(c.errorClasses),
 	}
 	n := len(c.latencies)
 	if n == 0 {

@@ -3,4 +3,5 @@ Summary
   Rate      5.0 req/s  Bytes     0 B
 
 Errors
-  total  5
+  total    5
+  refused  5
